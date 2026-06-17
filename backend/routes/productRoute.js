@@ -1,28 +1,22 @@
 import express from 'express';
-import Product from '../models/productModel';
-import { isAuth, isAdmin } from '../util';
+import Product from '../models/productModel.js';
+import { isAuth, isAdmin } from '../util.js';
 
 const router = express.Router();
 
 router.get('/', async (req, res) => {
-  const category = req.query.category ? { category: req.query.category } : {};
-  const searchKeyword = req.query.searchKeyword
-    ? {
-        name: {
-          $regex: req.query.searchKeyword,
-          $options: 'i',
-        },
-      }
-    : {};
-  const sortOrder = req.query.sortOrder
-    ? req.query.sortOrder === 'lowest'
-      ? { price: 1 }
-      : { price: -1 }
-    : { _id: -1 };
-  const products = await Product.find({ ...category, ...searchKeyword }).sort(
-    sortOrder
-  );
-  res.send(products);
+  console.log('GET /api/products called');
+
+  try {
+    const products = await Product.find({});
+
+    console.log('Products found:', products.length);
+
+    res.send(products);
+  } catch (err) {
+    console.log('ERROR:', err);
+    res.status(500).send(err);
+  }
 });
 
 router.get('/:id', async (req, res) => {
