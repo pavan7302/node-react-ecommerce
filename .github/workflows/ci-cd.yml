@@ -30,7 +30,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
 
       - name: Install Backend Dependencies
@@ -38,11 +38,14 @@ jobs:
           cd backend
           npm install
 
+      - name: Wait for MongoDB 
+        run : sleep 15
+
 
       - name: Run Unit Tests
         run: |
           cd backend
-          MONGO_URI=mongodb://localhost:27017/ecommerce npm test
+          MONGOOB_URI=mongodb://localhost:27017/ecommerce npm test
 
 
       #################################
