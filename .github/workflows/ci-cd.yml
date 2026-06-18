@@ -42,7 +42,7 @@ jobs:
       - name: Run Unit Tests
         run: |
           cd backend
-          MONGODB_URI=mongodb://localhost:27017/ecommerce npm test
+          MONGODB_URL=mongodb://localhost:27017/ecommerce npm test
 
       ##################################################
       # Slack Notification — Test Success
