@@ -1,4 +1,4 @@
-name: DevOps Full Pipeline
+name: DevOps CI/CD Pipeline
 
 on:
   push:
@@ -6,15 +6,16 @@ on:
       - master
 
 env:
-  APP_NAME: node-react-ecommerce
+  IMAGE_NAME: backend
 
 jobs:
 
-########################################################
-# JOB 1 — UNIT TESTS
-########################################################
+####################################################
+# 1. UNIT TESTS
+####################################################
 
   test:
+    name: Unit Tests
     runs-on: ubuntu-latest
 
     services:
@@ -25,46 +26,35 @@ jobs:
 
     steps:
 
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v5
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
 
       - name: Install Dependencies
-        run: |
-          cd backend
-          npm install
+        working-directory: backend
+        run: npm ci
 
       - name: Wait for MongoDB
-        run: sleep 20
+        run: sleep 15
 
       - name: Run Unit Tests
-        run: |
-          cd backend
-          MONGODB_URL=mongodb://localhost:27017/ecommerce npm test
+        working-directory: backend
+        env:
+          MONGODB_URL: mongodb://localhost:27017/ecommerce
+        run: npm test
 
-      - name: Slack Test Success
-        if: success()
-        run: |
-          curl -X POST -H "Content-type: application/json" \
-          --data '{"text":"✅ UNIT TESTS PASSED"}' \
-          ${{ secrets.SLACK_WEBHOOK }}
-
-      - name: Slack Test Failure
-        if: failure()
-        run: |
-          curl -X POST -H "Content-type: application/json" \
-          --data '{"text":"❌ UNIT TESTS FAILED"}' \
-          ${{ secrets.SLACK_WEBHOOK }}
-
-########################################################
-# JOB 2 — SECURITY SCAN
-########################################################
+####################################################
+# 2. SECURITY SCAN
+####################################################
 
   security_scan:
+    name: Trivy Security Scan
     needs: test
     runs-on: ubuntu-latest
 
@@ -73,32 +63,19 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Run Trivy Scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.33.1
         with:
           scan-type: fs
           scan-ref: .
           severity: CRITICAL,HIGH
           exit-code: 1
 
-      - name: Slack Security Success
-        if: success()
-        run: |
-          curl -X POST -H "Content-type: application/json" \
-          --data '{"text":"🛡 SECURITY SCAN PASSED"}' \
-          ${{ secrets.SLACK_WEBHOOK }}
-
-      - name: Slack Security Failure
-        if: failure()
-        run: |
-          curl -X POST -H "Content-type: application/json" \
-          --data '{"text":"⚠ SECURITY SCAN FAILED"}' \
-          ${{ secrets.SLACK_WEBHOOK }}
-
-########################################################
-# JOB 3 — VERSIONING
-########################################################
+####################################################
+# 3. GENERATE VERSION
+####################################################
 
   versioning:
+    name: Generate Version
     needs: security_scan
     runs-on: ubuntu-latest
 
@@ -116,99 +93,109 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Generated Version: $VERSION"
 
-      - name: Slack Version Created
-        run: |
-          curl -X POST -H "Content-type: application/json" \
-          --data '{"text":"🏷 VERSION CREATED : v1.0.${{ github.run_number }}"}' \
-          ${{ secrets.SLACK_WEBHOOK }}
+####################################################
+# 4. LOGIN TO DOCKER HUB
+####################################################
 
-########################################################
-# JOB 4 — BUILD DOCKER IMAGES
-########################################################
-
-  docker_build:
+  docker_login:
+    name: Docker Login
     needs: versioning
     runs-on: ubuntu-latest
 
     steps:
 
-      - uses: actions/checkout@v5
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build Backend Image
-        run: |
-          docker build -t backend-image ./backend
+####################################################
+# 5. BUILD & PUSH IMAGE
+####################################################
 
-      - name: Build Frontend Image
-        run: |
-          docker build -t frontend-image ./frontend
+  docker_build_push:
+    name: Build and Push Docker Image
+    needs:
+      - docker_login
+      - versioning
 
-      - name: Slack Build Success
-        if: success()
-        run: |
-          curl -X POST -H "Content-type: application/json" \
-          --data '{"text":"🐳 DOCKER BUILD SUCCESS"}' \
-          ${{ secrets.SLACK_WEBHOOK }}
-
-########################################################
-# JOB 5 — PUSH TO DOCKER HUB
-########################################################
-
-  docker_push:
-    needs: docker_build
     runs-on: ubuntu-latest
 
     steps:
 
       - uses: actions/checkout@v5
 
-      - name: Login DockerHub
+      - name: Login to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build Backend Tagged Image
-        run: |
-          docker build -t ${{ secrets.DOCKER_USERNAME }}/backend:v1.0.${{ github.run_number }} ./backend
+      - name: Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKER_USERNAME }}/backend
+          tags: |
+            type=raw,value=${{ needs.versioning.outputs.version }}
+            type=raw,value=latest
 
-      - name: Push Backend Image
-        run: |
-          docker push ${{ secrets.DOCKER_USERNAME }}/backend:v1.0.${{ github.run_number }}
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
 
-      - name: Slack Push Success
-        run: |
-          curl -X POST -H "Content-type: application/json" \
-          --data '{"text":"📦 DOCKER IMAGE PUSHED TO DOCKER HUB"}' \
-          ${{ secrets.SLACK_WEBHOOK }}
+####################################################
+# 6. SLACK NOTIFICATION
+####################################################
 
-########################################################
-# JOB 6 — FINAL STATUS
-########################################################
-
-  pipeline_status:
+  slack_notification:
+    name: Slack Notification
     if: always()
 
     needs:
       - test
       - security_scan
       - versioning
-      - docker_build
-      - docker_push
+      - docker_build_push
 
     runs-on: ubuntu-latest
 
     steps:
 
-      - name: Final Success Notification
-        if: needs.docker_push.result == 'success'
-        run: |
-          curl -X POST -H "Content-type: application/json" \
-          --data '{"text":"🚀 FULL PIPELINE SUCCESS — READY FOR DEPLOYMENT"}' \
-          ${{ secrets.SLACK_WEBHOOK }}
+      - name: Success Notification
+        if: needs.docker_build_push.result == 'success'
+        uses: slackapi/slack-github-action@v2
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: |
+              🚀 *Pipeline Completed Successfully*
 
-      - name: Final Failure Notification
-        if: needs.docker_push.result == 'failure'
-        run: |
-          curl -X POST -H "Content-type: application/json" \
-          --data '{"text":"🔥 PIPELINE FAILED"}' \
-          ${{ secrets.SLACK_WEBHOOK }}
+              ✅ Unit Tests Passed
+
+              ✅ Security Scan Passed
+
+              ✅ Docker Image Built
+
+              ✅ Docker Image Pushed
+
+              Version: ${{ needs.versioning.outputs.version }}
+
+      - name: Failure Notification
+        if: needs.docker_build_push.result != 'success'
+        uses: slackapi/slack-github-action@v2
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: |
+              ❌ *Pipeline Failed*
+
+              Please check GitHub Actions logs.
