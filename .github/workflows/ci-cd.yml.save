@@ -1,0 +1,135 @@
+name: DevOps Full Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+
+  ###################################
+  # JOB 1 — UNIT TESTS
+  ###################################
+
+  test:
+
+    runs-on: ubuntu-latest
+
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+
+    steps:
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Backend Dependencies
+        run: |
+          cd backend
+          npm install
+
+      - name: Run Unit Tests
+        run: |
+          cd backend
+          MONGO_URI=mongodb://localhost:27017/ecommerce npm test
+
+      - name: Slack Unit Test Success
+        if: success()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{
+            "text":"✅ UNIT TESTS PASSED\nProject: node-react-ecommerce\nStatus: All API tests passed"
+          }' \
+          ${{ secrets.SLACK_WEBHOOK }}
+
+      - name: Slack Unit Test Failure
+        if: failure()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{
+            "text":"❌ UNIT TESTS FAILED\nProject: node-react-ecommerce\nCheck failing test cases in GitHub Actions"
+          }' \
+          ${{ secrets.SLACK_WEBHOOK }
+
+
+
+  ###################################
+  # JOB 2 — SECURITY SCAN
+  ###################################
+
+  security_scan:
+
+    needs: test
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy Security Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+
+      - name: Slack Security Scan Success
+        if: success()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{
+            "text":"🛡️ SECURITY SCAN PASSED\nProject: node-react-ecommerce\nNo critical vulnerabilities detected"
+          }' \
+          ${{ secrets.SLACK_WEBHOOK }}
+
+      - name: Slack Security Scan Failure
+        if: failure()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{
+            "text":"⚠️ SECURITY SCAN FAILED\nProject: node-react-ecommerce\nCritical vulnerabilities detected"
+          }' \
+          ${{ secrets.SLACK_WEBHOOK }
+
+
+
+  ###################################
+  # JOB 3 — FINAL PIPELINE STATUS
+  ###################################
+
+  pipeline_status:
+
+    needs: [test, security_scan]
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Pipeline Success Notification
+        if: success()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{
+            "text":"🚀 FULL PIPELINE SUCCESS\nProject: node-react-ecommerce\nTests Passed + Security Scan Passed\nReady for Deployment"
+          }' \
+          ${{ secrets.SLACK_WEBHOOK }}
+
+      - name: Pipeline Failure Notification
+        if: failure()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{
+            "text":"🔥 PIPELINE FAILED\nProject: node-react-ecommerce\nOne or more stages failed\nDeployment blocked"
+          }' \
+          ${{ secrets.SLACK_WEBHOOK }}
+
+
