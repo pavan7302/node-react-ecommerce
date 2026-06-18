@@ -1,4 +1,3 @@
-```yaml
 name: DevOps CI/CD Pipeline
 
 on:
@@ -11,9 +10,9 @@ env:
 
 jobs:
 
-####################################################
-# 1. UNIT TESTS
-####################################################
+  ####################################################
+  # 1. UNIT TESTS
+  ####################################################
 
   test:
     name: Unit Tests
@@ -39,7 +38,12 @@ jobs:
         run: npm ci
 
       - name: Wait for MongoDB
-        run: sleep 15
+        run: |
+          for i in {1..30}; do
+            nc -z localhost 27017 && break
+            echo "Waiting for MongoDB..."
+            sleep 2
+          done
 
       - name: Run Unit Tests
         working-directory: backend
@@ -47,9 +51,9 @@ jobs:
           MONGODB_URL: mongodb://localhost:27017/ecommerce
         run: npm test
 
-####################################################
-# 2. SECURITY SCAN
-####################################################
+  ####################################################
+  # 2. SECURITY SCAN
+  ####################################################
 
   security_scan:
     name: Trivy Security Scan
@@ -57,7 +61,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout Repository
+        uses: actions/checkout@v5
 
       - name: Run Trivy Scan
         uses: aquasecurity/trivy-action@0.33.1
@@ -67,9 +72,9 @@ jobs:
           severity: CRITICAL,HIGH
           exit-code: 1
 
-####################################################
-# 3. VERSIONING
-####################################################
+  ####################################################
+  # 3. VERSIONING
+  ####################################################
 
   versioning:
     name: Generate Version
@@ -80,25 +85,28 @@ jobs:
       version: ${{ steps.version.outputs.version }}
 
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout Repository
+        uses: actions/checkout@v5
 
       - name: Generate Version
         id: version
         run: |
           VERSION=v1.0.${{ github.run_number }}
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Generated Version: $VERSION"
 
-####################################################
-# 4. BUILD & PUSH DOCKER IMAGE
-####################################################
+  ####################################################
+  # 4. BUILD & PUSH DOCKER IMAGE
+  ####################################################
 
   docker_build_push:
-    name: Build & Push Docker Image
+    name: Build and Push Docker Image
     needs: versioning
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout Repository
+        uses: actions/checkout@v5
 
       - name: Login to Docker Hub
         uses: docker/login-action@v4
@@ -106,7 +114,7 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Generate Docker Metadata
+      - name: Docker Metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -124,12 +132,13 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-####################################################
-# 5. FINAL SLACK NOTIFICATION
-####################################################
+  ####################################################
+  # 5. FINAL SLACK NOTIFICATION
+  ####################################################
 
   notify:
     name: Slack Notification
+    runs-on: ubuntu-latest
     if: always()
 
     needs:
@@ -138,52 +147,25 @@ jobs:
       - versioning
       - docker_build_push
 
-    runs-on: ubuntu-latest
-
     steps:
-
-      - name: Success Notification
-        if: |
-          needs.test.result == 'success' &&
-          needs.security_scan.result == 'success' &&
-          needs.versioning.result == 'success' &&
-          needs.docker_build_push.result == 'success'
+      - name: Notify Success
+        if: ${{ needs.test.result == 'success' && needs.security_scan.result == 'success' && needs.versioning.result == 'success' && needs.docker_build_push.result == 'success' }}
         uses: slackapi/slack-github-action@v2
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK }}
           webhook-type: incoming-webhook
           payload: |
-            text: |
-              🚀 DevOps Pipeline Completed Successfully
+            {
+              "text": "🚀 DevOps Pipeline Completed Successfully\n\n✅ Unit Tests Passed\n✅ Security Scan Passed\n✅ Version Created\n✅ Docker Image Built & Pushed\n\nVersion: ${{ needs.versioning.outputs.version }}"
+            }
 
-              ✅ Unit Tests Passed
-              ✅ Security Scan Passed
-              ✅ Version Created
-              ✅ Docker Image Built
-              ✅ Docker Image Pushed
-
-              Version:
-              ${{ needs.versioning.outputs.version }}
-
-      - name: Failure Notification
-        if: |
-          needs.test.result != 'success' ||
-          needs.security_scan.result != 'success' ||
-          needs.versioning.result != 'success' ||
-          needs.docker_build_push.result != 'success'
+      - name: Notify Failure
+        if: ${{ needs.test.result != 'success' || needs.security_scan.result != 'success' || needs.versioning.result != 'success' || needs.docker_build_push.result != 'success' }}
         uses: slackapi/slack-github-action@v2
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK }}
           webhook-type: incoming-webhook
           payload: |
-            text: |
-              ❌ DevOps Pipeline Failed
-
-              Test            : ${{ needs.test.result }}
-              Security Scan   : ${{ needs.security_scan.result }}
-              Versioning      : ${{ needs.versioning.result }}
-              Docker Build    : ${{ needs.docker_build_push.result }}
-
-              Check GitHub Actions logs for details.
-```
-
+            {
+              "text": "❌ DevOps Pipeline Failed\n\nTest: ${{ needs.test.result }}\nSecurity Scan: ${{ needs.security_scan.result }}\nVersioning: ${{ needs.versioning.result }}\nDocker Build: ${{ needs.docker_build_push.result }}"
+            }
