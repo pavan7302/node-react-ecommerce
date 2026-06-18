@@ -3,60 +3,50 @@ name: DevOps Full Pipeline
 on:
   push:
     branches:
-      - master          # change to master if your branch is master
+      - master
 
 jobs:
 
-  #####################################################
-  # JOB 1 : UNIT TESTS
-  #####################################################
+  ########################################################
+  # JOB 1 — UNIT TESTS
+  ########################################################
 
   test:
 
     runs-on: ubuntu-latest
-    
+
     services:
-     mongodb:
-      image: mongo:7
-      ports:
-        - 27017:27017
-      options: >-
-      --health-cmd "mongosh --eval 'db.adminCommand(\"ping\")'"
-      --health-interval 10s
-      --health-timeout 5s
-      --health-retries 5
-    
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
 
     steps:
 
       - name: Checkout Code
         uses: actions/checkout@v4
 
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-
 
       - name: Install Backend Dependencies
         run: |
           cd backend
           npm install
 
-      - name: Wait for MongoDB 
-        run : sleep 15
-
+      - name: Wait for MongoDB
+        run: sleep 20
 
       - name: Run Unit Tests
         run: |
           cd backend
           MONGODB_URI=mongodb://localhost:27017/ecommerce npm test
 
-
-      #################################
-      # Slack if tests pass
-      #################################
+      ##################################################
+      # Slack Notification — Test Success
+      ##################################################
 
       - name: Slack Unit Test Success
         if: success()
@@ -67,10 +57,9 @@ jobs:
           }' \
           ${{ secrets.SLACK_WEBHOOK }}
 
-
-      #################################
-      # Slack if tests fail
-      #################################
+      ##################################################
+      # Slack Notification — Test Failure
+      ##################################################
 
       - name: Slack Unit Test Failure
         if: failure()
@@ -83,9 +72,9 @@ jobs:
 
 
 
-  #####################################################
-  # JOB 2 : SECURITY SCAN
-  #####################################################
+  ########################################################
+  # JOB 2 — SECURITY SCAN
+  ########################################################
 
   security_scan:
 
@@ -98,10 +87,9 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-
-      #################################
+      ##################################################
       # Trivy Security Scan
-      #################################
+      ##################################################
 
       - name: Run Trivy Security Scan
         uses: aquasecurity/trivy-action@master
@@ -111,10 +99,9 @@ jobs:
           severity: CRITICAL,HIGH
           exit-code: 1
 
-
-      #################################
-      # Slack if scan passes
-      #################################
+      ##################################################
+      # Slack Notification — Security Success
+      ##################################################
 
       - name: Slack Security Scan Success
         if: success()
@@ -125,10 +112,9 @@ jobs:
           }' \
           ${{ secrets.SLACK_WEBHOOK }}
 
-
-      #################################
-      # Slack if vulnerabilities found
-      #################################
+      ##################################################
+      # Slack Notification — Security Failure
+      ##################################################
 
       - name: Slack Security Scan Failure
         if: failure()
@@ -141,9 +127,9 @@ jobs:
 
 
 
-  #####################################################
-  # JOB 3 : FINAL PIPELINE STATUS
-  #####################################################
+  ########################################################
+  # JOB 3 — FINAL PIPELINE STATUS
+  ########################################################
 
   pipeline_status:
 
@@ -157,9 +143,9 @@ jobs:
 
     steps:
 
-      #################################
-      # Pipeline Success
-      #################################
+      ##################################################
+      # Final Success Notification
+      ##################################################
 
       - name: Final Pipeline Success Notification
         if: needs.test.result == 'success' && needs.security_scan.result == 'success'
@@ -170,10 +156,9 @@ jobs:
           }' \
           ${{ secrets.SLACK_WEBHOOK }}
 
-
-      #################################
-      # Pipeline Failure
-      #################################
+      ##################################################
+      # Final Failure Notification
+      ##################################################
 
       - name: Final Pipeline Failure Notification
         if: needs.test.result == 'failure' || needs.security_scan.result == 'failure'
