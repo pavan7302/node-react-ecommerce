@@ -116,7 +116,7 @@ jobs:
 
       - name: Docker Metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ secrets.DOCKER_USERNAME }}/backend
           tags: |
@@ -124,7 +124,7 @@ jobs:
             type=raw,value=latest
 
       - name: Build and Push Docker Image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./backend
           file: ./backend/Dockerfile
@@ -150,7 +150,7 @@ jobs:
     steps:
       - name: Notify Success
         if: ${{ needs.test.result == 'success' && needs.security_scan.result == 'success' && needs.versioning.result == 'success' && needs.docker_build_push.result == 'success' }}
-        uses: slackapi/slack-github-action@v2
+        uses: slackapi/slack-github-action@v3
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK }}
           webhook-type: incoming-webhook
@@ -161,7 +161,7 @@ jobs:
 
       - name: Notify Failure
         if: ${{ needs.test.result != 'success' || needs.security_scan.result != 'success' || needs.versioning.result != 'success' || needs.docker_build_push.result != 'success' }}
-        uses: slackapi/slack-github-action@v2
+        uses: slackapi/slack-github-action@v3
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK }}
           webhook-type: incoming-webhook
