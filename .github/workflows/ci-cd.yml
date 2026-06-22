@@ -23,30 +23,32 @@ jobs:
       - self-hosted
       - linux
 
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v5
+  steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v5
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 24
+    - name: Setup Node.js
+      uses: actions/setup-node@v5
+      with:
+        node-version: 24
 
-      - name: Install Dependencies
-        working-directory: backend
-        run: npm ci
+    - name: Start MongoDB
+      uses: supercharge/mongodb-github-action@1.12.0
+      with:
+        mongodb-version: 7.0
+        mongodb-container-name: github-test-mongo
+        mongodb-port: 27018
 
-      - name: Start MongoDB
-        uses: supercharge/mongodb-github-action@1.12.0
-        with:
-          mongodb-version: 7.0
+    - name: Install Dependencies
+      working-directory: backend
+      run: npm ci
 
-      - name: Run Unit Tests
-        working-directory: backend
-        env:
-          MONGODB_URL: mongodb://localhost:27017/ecommerce
-          NODE_ENV: test
-        run: npm test
+    - name: Run Unit Tests
+      working-directory: backend
+      env:
+        MONGODB_URL: mongodb://localhost:27018/ecommerce
+        NODE_ENV: test
+      run: npm test
 
   ####################################################
   # 2. SECURITY SCAN
