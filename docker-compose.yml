@@ -1,7 +1,7 @@
 services:
 
   backend:
-    image: YOUR_DOCKER_USERNAME/backend:latest
+    image: pavan7302/backend:latest
     container_name: backend
     ports:
       - "5000:5000"
