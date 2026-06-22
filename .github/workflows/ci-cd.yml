@@ -36,10 +36,16 @@ jobs:
         working-directory: backend
         run: npm ci
 
+      - name: Start MongoDB
+        uses: supercharge/mongodb-github-action@1.12.0
+        with:
+          mongodb-version: 7.0
+
       - name: Run Unit Tests
         working-directory: backend
         env:
           MONGODB_URL: mongodb://localhost:27017/ecommerce
+          NODE_ENV: test
         run: npm test
 
   ####################################################
@@ -73,6 +79,7 @@ jobs:
   versioning:
     name: Generate Version
     needs: security_scan
+
     runs-on:
       - self-hosted
       - linux
@@ -101,6 +108,7 @@ jobs:
   docker_build_push:
     name: Build and Push Docker Image
     needs: versioning
+
     runs-on:
       - self-hosted
       - linux
@@ -145,26 +153,26 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
   ####################################################
-  # 5. DEPLOY APPLICATION
+  # 5. DEPLOY
   ####################################################
 
   deploy:
     name: Deploy Application
     needs: docker_build_push
+
     runs-on:
       - self-hosted
       - linux
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v5
-
-      - name: Pull Latest Docker Image
+      - name: Pull Latest Backend Image
         run: |
+          cd /home/ubuntu/node-react-ecommerce
           docker pull ${{ secrets.DOCKER_USERNAME }}/backend:latest
 
-      - name: Restart Application
+      - name: Restart Containers
         run: |
+          cd /home/ubuntu/node-react-ecommerce
           docker compose down
           docker compose up -d
 
@@ -175,17 +183,18 @@ jobs:
   health_check:
     name: Application Health Check
     needs: deploy
+
     runs-on:
       - self-hosted
       - linux
 
     steps:
-      - name: Wait for Application Startup
-        run: sleep 15
+      - name: Wait for Startup
+        run: sleep 20
 
       - name: Check Backend API
         run: |
-          curl -f http://localhost:5000/api/products || exit 1
+          curl -f http://localhost:5000/api/products
 
   ####################################################
   # 7. SLACK NOTIFICATION
@@ -218,12 +227,11 @@ jobs:
             {
               "text": "🚀 Pipeline Successful
 
-              ✅ Unit Tests Passed
-              ✅ Security Scan Passed
-              ✅ Version Created
-              ✅ Docker Build & Push Successful
-              ✅ Deployment Successful
-              ✅ Health Check Passed
+              Unit Test: Passed
+              Security Scan: Passed
+              Docker Push: Success
+              Deploy: Success
+              Health Check: Passed
 
               Version: ${{ needs.versioning.outputs.version }}"
             }
@@ -240,7 +248,7 @@ jobs:
 
               Test: ${{ needs.test.result }}
               Security: ${{ needs.security_scan.result }}
-              Docker Build: ${{ needs.docker_build_push.result }}
+              Docker: ${{ needs.docker_build_push.result }}
               Deploy: ${{ needs.deploy.result }}
-              Health Check: ${{ needs.health_check.result }}"
+              Health: ${{ needs.health_check.result }}"
             }
