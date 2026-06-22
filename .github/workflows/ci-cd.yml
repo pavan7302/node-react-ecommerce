@@ -73,7 +73,6 @@ jobs:
   versioning:
     name: Generate Version
     needs: security_scan
-
     runs-on:
       - self-hosted
       - linux
@@ -102,7 +101,6 @@ jobs:
   docker_build_push:
     name: Build and Push Docker Image
     needs: versioning
-
     runs-on:
       - self-hosted
       - linux
@@ -110,6 +108,9 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
         uses: docker/login-action@v4
@@ -123,7 +124,7 @@ jobs:
         with:
           images: ${{ secrets.DOCKER_USERNAME }}/backend
           tags: |
-            type=raw,value=${{ steps.meta.outputs.version }}
+            type=raw,value=${{ needs.versioning.outputs.version }}
             type=sha
             type=ref,event=branch
             type=raw,value=latest
@@ -150,7 +151,6 @@ jobs:
   deploy:
     name: Deploy Application
     needs: docker_build_push
-
     runs-on:
       - self-hosted
       - linux
@@ -159,7 +159,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v5
 
-      - name: Pull Latest Image
+      - name: Pull Latest Docker Image
         run: |
           docker pull ${{ secrets.DOCKER_USERNAME }}/backend:latest
 
@@ -175,13 +175,12 @@ jobs:
   health_check:
     name: Application Health Check
     needs: deploy
-
     runs-on:
       - self-hosted
       - linux
 
     steps:
-      - name: Wait for App Startup
+      - name: Wait for Application Startup
         run: sleep 15
 
       - name: Check Backend API
@@ -219,11 +218,12 @@ jobs:
             {
               "text": "🚀 Pipeline Successful
 
-              Unit Test: Passed
-              Security Scan: Passed
-              Docker Build: Success
-              Deploy: Success
-              Health Check: Passed
+              ✅ Unit Tests Passed
+              ✅ Security Scan Passed
+              ✅ Version Created
+              ✅ Docker Build & Push Successful
+              ✅ Deployment Successful
+              ✅ Health Check Passed
 
               Version: ${{ needs.versioning.outputs.version }}"
             }
@@ -239,7 +239,7 @@ jobs:
               "text": "❌ Pipeline Failed
 
               Test: ${{ needs.test.result }}
-              Security Scan: ${{ needs.security_scan.result }}
+              Security: ${{ needs.security_scan.result }}
               Docker Build: ${{ needs.docker_build_push.result }}
               Deploy: ${{ needs.deploy.result }}
               Health Check: ${{ needs.health_check.result }}"
