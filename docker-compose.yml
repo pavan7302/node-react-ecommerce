@@ -1,7 +1,7 @@
 services:
 
   backend:
-    image: pavan7302/backend:latest
+    image: YOUR_DOCKER_USERNAME/backend:latest
     container_name: backend
     ports:
       - "5000:5000"
@@ -12,7 +12,7 @@ services:
     restart: always
 
   frontend:
-    image: pavan7302/frontend:latest
+    build: ./frontend
     container_name: frontend
     ports:
       - "80:80"
