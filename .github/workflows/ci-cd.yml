@@ -16,13 +16,9 @@ jobs:
 
   test:
     name: Unit Tests
-    runs-on: self-hosted
-
-    services:
-      mongodb:
-        image: mongo:7
-        ports:
-          - 27017:27017
+    runs-on:
+      - self-hosted
+      - linux
 
     steps:
       - name: Checkout Repository
@@ -37,14 +33,7 @@ jobs:
         working-directory: backend
         run: npm ci
 
-      - name: Wait for MongoDB
-        run: |
-          for i in {1..30}; do
-            nc -z localhost 27017 && break
-            echo "Waiting for MongoDB..."
-            sleep 2
-          done
-
+      # Uses already running Mongo container on EC2
       - name: Run Unit Tests
         working-directory: backend
         env:
@@ -53,19 +42,21 @@ jobs:
 
 
 ####################################################
-# 2. SECURITY SCAN
+# 2. SECURITY SCAN (FILESYSTEM)
 ####################################################
 
   security_scan:
     name: Trivy Security Scan
     needs: test
-    runs-on: self-hosted
+    runs-on:
+      - self-hosted
+      - linux
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v5
 
-      - name: Run Trivy Scan
+      - name: Run Trivy Filesystem Scan
         uses: aquasecurity/trivy-action@0.28.0
         with:
           scan-type: fs
@@ -81,7 +72,9 @@ jobs:
   versioning:
     name: Generate Version
     needs: security_scan
-    runs-on: self-hosted
+    runs-on:
+      - self-hosted
+      - linux
 
     outputs:
       version: ${{ steps.version.outputs.new_tag }}
@@ -89,6 +82,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Generate Version Tag
         id: version
@@ -106,19 +101,19 @@ jobs:
   docker_build_push:
     name: Build and Push Docker Image
     needs: versioning
-    runs-on: self-hosted
+    runs-on:
+      - self-hosted
+      - linux
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v5
-
 
       - name: Login to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-
 
       - name: Docker Metadata
         id: meta
@@ -137,7 +132,6 @@ jobs:
             org.opencontainers.image.created={{date 'YYYY-MM-DD'}}
             org.opencontainers.image.revision={{sha}}
 
-
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v7
         with:
@@ -149,12 +143,74 @@ jobs:
 
 
 ####################################################
-# 5. SLACK NOTIFICATION
+# 5. IMAGE SECURITY SCAN
+####################################################
+
+  image_scan:
+    name: Docker Image Security Scan
+    needs: docker_build_push
+    runs-on:
+      - self-hosted
+      - linux
+
+    steps:
+      - name: Scan Docker Image
+        run: |
+          trivy image \
+          ${{ secrets.DOCKER_USERNAME }}/backend:latest
+
+
+####################################################
+# 6. DEPLOY LOCALLY (SAME EC2)
+####################################################
+
+  deploy:
+    name: Deploy Application
+    needs: image_scan
+    runs-on:
+      - self-hosted
+      - linux
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+
+      - name: Pull Latest Backend Image
+        run: |
+          docker pull ${{ secrets.DOCKER_USERNAME }}/backend:latest
+
+      - name: Restart Containers
+        run: |
+          docker compose down
+          docker compose up -d
+
+
+####################################################
+# 7. HEALTH CHECK
+####################################################
+
+  health_check:
+    name: Application Health Check
+    needs: deploy
+    runs-on:
+      - self-hosted
+      - linux
+
+    steps:
+      - name: Wait for App Startup
+        run: sleep 15
+
+      - name: Check Backend Health
+        run: |
+          curl -f http://localhost:5000 || exit 1
+
+
+####################################################
+# 8. FINAL SLACK NOTIFICATION
 ####################################################
 
   notify:
     name: Slack Notification
-    runs-on: self-hosted
     if: always()
 
     needs:
@@ -162,37 +218,50 @@ jobs:
       - security_scan
       - versioning
       - docker_build_push
+      - image_scan
+      - deploy
+      - health_check
+
+    runs-on:
+      - self-hosted
+      - linux
 
     steps:
       - name: Notify Success
-        if: ${{ needs.test.result == 'success' && needs.security_scan.result == 'success' && needs.versioning.result == 'success' && needs.docker_build_push.result == 'success' }}
+        if: ${{ needs.health_check.result == 'success' }}
         uses: slackapi/slack-github-action@v3
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK }}
           webhook-type: incoming-webhook
           payload: |
             {
-              "text": "🚀 Pipeline Successful
+              "text": "🚀 DevOps Pipeline Successful
 
-              Version: ${{ needs.versioning.outputs.version }}
+              ✅ Unit Tests Passed
+              ✅ Filesystem Security Scan Passed
+              ✅ Version Created
+              ✅ Docker Image Built & Pushed
+              ✅ Docker Image Scan Passed
+              ✅ Deployment Successful
+              ✅ Health Check Passed
 
-              Unit Test: Passed
-              Security Scan: Passed
-              Docker Push: Success"
+              Version: ${{ needs.versioning.outputs.version }}"
             }
 
-
       - name: Notify Failure
-        if: ${{ needs.test.result != 'success' || needs.security_scan.result != 'success' || needs.versioning.result != 'success' || needs.docker_build_push.result != 'success' }}
+        if: ${{ needs.health_check.result != 'success' }}
         uses: slackapi/slack-github-action@v3
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK }}
           webhook-type: incoming-webhook
           payload: |
             {
-              "text": "❌ Pipeline Failed
+              "text": "❌ DevOps Pipeline Failed
 
               Test: ${{ needs.test.result }}
-              Security: ${{ needs.security_scan.result }}
-              Docker: ${{ needs.docker_build_push.result }}"
+              Security Scan: ${{ needs.security_scan.result }}
+              Docker Build: ${{ needs.docker_build_push.result }}
+              Image Scan: ${{ needs.image_scan.result }}
+              Deploy: ${{ needs.deploy.result }}
+              Health Check: ${{ needs.health_check.result }}"
             }
