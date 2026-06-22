@@ -10,13 +10,13 @@ env:
 
 jobs:
 
-  ####################################################
-  # 1. UNIT TESTS
-  ####################################################
+####################################################
+# 1. UNIT TESTS
+####################################################
 
   test:
     name: Unit Tests
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     services:
       mongodb:
@@ -51,68 +51,74 @@ jobs:
           MONGODB_URL: mongodb://localhost:27017/ecommerce
         run: npm test
 
-  ####################################################
-  # 2. SECURITY SCAN
-  ####################################################
+
+####################################################
+# 2. SECURITY SCAN
+####################################################
 
   security_scan:
     name: Trivy Security Scan
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v5
 
       - name: Run Trivy Scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.28.0
         with:
           scan-type: fs
           scan-ref: .
           severity: CRITICAL,HIGH
           exit-code: 1
 
-  ####################################################
-  # 3. VERSIONING
-  ####################################################
+
+####################################################
+# 3. VERSIONING
+####################################################
 
   versioning:
     name: Generate Version
     needs: security_scan
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      version: ${{ steps.version.outputs.new_tag }}
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v5
 
-      - name: Generate Version
+      - name: Generate Version Tag
         id: version
-        run: |
-          VERSION=v1.0.${{ github.run_number }}
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Generated Version: $VERSION"
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: patch
+          tag_prefix: v
 
-  ####################################################
-  # 4. BUILD & PUSH DOCKER IMAGE
-  ####################################################
+
+####################################################
+# 4. BUILD & PUSH DOCKER IMAGE
+####################################################
 
   docker_build_push:
     name: Build and Push Docker Image
     needs: versioning
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v5
+
 
       - name: Login to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+
 
       - name: Docker Metadata
         id: meta
@@ -121,7 +127,16 @@ jobs:
           images: ${{ secrets.DOCKER_USERNAME }}/backend
           tags: |
             type=raw,value=${{ needs.versioning.outputs.version }}
+            type=sha
+            type=ref,event=branch
             type=raw,value=latest
+          labels: |
+            org.opencontainers.image.title=backend
+            org.opencontainers.image.description=Node React Ecommerce Backend
+            org.opencontainers.image.version=${{ needs.versioning.outputs.version }}
+            org.opencontainers.image.created={{date 'YYYY-MM-DD'}}
+            org.opencontainers.image.revision={{sha}}
+
 
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v7
@@ -132,13 +147,14 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  ####################################################
-  # 5. FINAL SLACK NOTIFICATION
-  ####################################################
+
+####################################################
+# 5. SLACK NOTIFICATION
+####################################################
 
   notify:
     name: Slack Notification
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     if: always()
 
     needs:
@@ -156,8 +172,15 @@ jobs:
           webhook-type: incoming-webhook
           payload: |
             {
-              "text": "🚀 DevOps Pipeline Completed Successfully\n\n✅ Unit Tests Passed\n✅ Security Scan Passed\n✅ Version Created\n✅ Docker Image Built & Pushed\n\nVersion: ${{ needs.versioning.outputs.version }}"
+              "text": "🚀 Pipeline Successful
+
+              Version: ${{ needs.versioning.outputs.version }}
+
+              Unit Test: Passed
+              Security Scan: Passed
+              Docker Push: Success"
             }
+
 
       - name: Notify Failure
         if: ${{ needs.test.result != 'success' || needs.security_scan.result != 'success' || needs.versioning.result != 'success' || needs.docker_build_push.result != 'success' }}
@@ -167,5 +190,9 @@ jobs:
           webhook-type: incoming-webhook
           payload: |
             {
-              "text": "❌ DevOps Pipeline Failed\n\nTest: ${{ needs.test.result }}\nSecurity Scan: ${{ needs.security_scan.result }}\nVersioning: ${{ needs.versioning.result }}\nDocker Build: ${{ needs.docker_build_push.result }}"
+              "text": "❌ Pipeline Failed
+
+              Test: ${{ needs.test.result }}
+              Security: ${{ needs.security_scan.result }}
+              Docker: ${{ needs.docker_build_push.result }}"
             }
