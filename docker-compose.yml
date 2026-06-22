@@ -1,16 +1,18 @@
 services:
 
   backend:
-    build: ./backend
+    image: pavan7302/backend:latest
     container_name: backend
     ports:
       - "5000:5000"
     env_file:
       - ./backend/.env
+    depends_on:
+      - mongo
     restart: always
 
   frontend:
-    build: ./frontend
+    image: pavan7302/frontend:latest
     container_name: frontend
     ports:
       - "80:80"
