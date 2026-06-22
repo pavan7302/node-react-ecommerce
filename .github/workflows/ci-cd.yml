@@ -68,28 +68,28 @@ jobs:
 ####################################################
 
   versioning:
-    name: Generate Version
-    needs: security_scan
-    runs-on:
-      - self-hosted
-      - linux
+  name: Generate Version
+  needs: security_scan
+  runs-on:
+    - self-hosted
+    - linux
 
-    outputs:
-      version: ${{ steps.version.outputs.new_tag }}
+  outputs:
+    version: ${{ steps.version.outputs.version }}
 
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
+  steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v5
+      with:
+        fetch-depth: 0
 
-      - name: Generate Version Tag
-        id: version
-        uses: mathieudutour/github-tag-action@v6.2
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          default_bump: patch
-          tag_prefix: v
+    - name: Generate Semantic Version
+      id: version
+      uses: PaulHatch/semantic-version@v5.4.0
+      with:
+        tag_prefix: "v"
+        major_pattern: "BREAKING CHANGE"
+        minor_pattern: "feat"
 
 ####################################################
 # 4. BUILD & PUSH DOCKER IMAGE
