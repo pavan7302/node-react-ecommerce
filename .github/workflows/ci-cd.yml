@@ -3,7 +3,7 @@ name: CTO DevOps Pipeline
 on:
   push:
     branches:
-      - main
+      - master
   workflow_dispatch:
 
 env:
