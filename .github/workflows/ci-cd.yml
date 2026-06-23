@@ -97,7 +97,7 @@ jobs:
       - name: Generate Version Tag
         id: version
         run: |
-          TAG=v1.${{ github.run_number }}
+          TAG=v1.0.${{ github.run_number }}
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
       - name: Create Git Tag
