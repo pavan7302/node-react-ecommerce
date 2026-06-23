@@ -20,7 +20,7 @@ jobs:
       - linux
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v5
 
       - name: Setup Node.js
@@ -28,15 +28,18 @@ jobs:
         with:
           node-version: 24
 
-      # Separate Mongo only for CI testing
-      - name: Start MongoDB for Tests
+      - name: Cleanup Previous Test Containers
+        run: |
+          docker rm -f testmongo || true
+
+      - name: Start MongoDB Test Instance
         uses: supercharge/mongodb-github-action@1.12.0
         with:
           mongodb-version: 7.0
-          mongodb-container-name: github-test-mongo
+          mongodb-container-name: testmongo
           mongodb-port: 27018
 
-      - name: Install Dependencies
+      - name: Install Backend Dependencies
         working-directory: backend
         run: npm ci
 
@@ -47,6 +50,10 @@ jobs:
           NODE_ENV: test
         run: npm test
 
+      - name: Cleanup Test Mongo
+        if: always()
+        run: |
+          docker rm -f testmongo || true
 
   ####################################################
   # 2. SECURITY SCAN
@@ -59,18 +66,17 @@ jobs:
       - linux
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v5
 
-      - name: Run Security Scan
-        uses: aquasecurity/trivy-action@master
+      - name: Run Trivy Filesystem Scan
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           scan-type: fs
           scan-ref: .
-          severity: CRITICAL,HIGH
           format: table
+          severity: CRITICAL,HIGH
           exit-code: 1
-
 
   ####################################################
   # 3. VERSIONING
@@ -86,7 +92,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -99,9 +105,8 @@ jobs:
           major_pattern: "BREAKING CHANGE"
           minor_pattern: "feat"
 
-
   ####################################################
-  # 4. BUILD AND PUSH DOCKER IMAGE
+  # 4. BUILD AND PUSH
   ####################################################
   docker_build_push:
     name: Build and Push Docker Image
@@ -111,10 +116,10 @@ jobs:
       - linux
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v5
 
-      - name: Setup Docker Buildx
+      - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
@@ -131,15 +136,13 @@ jobs:
           tags: |
             type=raw,value=${{ needs.versioning.outputs.version }}
             type=sha
-            type=ref,event=branch
             type=raw,value=latest
           labels: |
             org.opencontainers.image.title=backend
-            org.opencontainers.image.description=Node React Ecommerce Backend
             org.opencontainers.image.version=${{ needs.versioning.outputs.version }}
             org.opencontainers.image.revision={{sha}}
 
-      - name: Build and Push Docker Image
+      - name: Build and Push Backend Image
         uses: docker/build-push-action@v7
         with:
           context: ./backend
@@ -147,7 +150,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-
 
   ####################################################
   # 5. DEPLOY
@@ -160,22 +162,34 @@ jobs:
       - linux
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v5
-
       - name: Pull Latest Backend Image
         run: |
           docker pull ${{ secrets.DOCKER_USERNAME }}/backend:latest
 
-      - name: Restart Containers
+      - name: Deploy Updated Containers
         run: |
           cd /home/ubuntu/node-react-ecommerce
-          docker compose down
-          docker compose up -d
-
+          docker compose pull backend
+          docker compose up -d backend
 
   ####################################################
-  # 6. SLACK NOTIFICATION
+  # 6. HEALTH CHECK
+  ####################################################
+  health_check:
+    name: Verify Deployment
+    needs: deploy
+    runs-on:
+      - self-hosted
+      - linux
+
+    steps:
+      - name: Check Backend API
+        run: |
+          sleep 15
+          curl --fail http://localhost:5000/api/products
+
+  ####################################################
+  # 7. SLACK NOTIFICATION
   ####################################################
   notify:
     name: Slack Notification
@@ -187,6 +201,7 @@ jobs:
       - versioning
       - docker_build_push
       - deploy
+      - health_check
 
     runs-on:
       - self-hosted
@@ -194,35 +209,23 @@ jobs:
 
     steps:
       - name: Notify Success
-        if: ${{ needs.test.result == 'success' && needs.security_scan.result == 'success' && needs.versioning.result == 'success' && needs.docker_build_push.result == 'success' && needs.deploy.result == 'success' }}
+        if: ${{ needs.health_check.result == 'success' }}
         uses: slackapi/slack-github-action@v2
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK }}
           webhook-type: incoming-webhook
           payload: |
             {
-              "text": "🚀 Pipeline Successful
-
-              Version: ${{ needs.versioning.outputs.version }}
-
-              Unit Tests: Passed
-              Security Scan: Passed
-              Docker Push: Success
-              Deployment: Success"
+              "text": "🚀 Pipeline Successful | Version: ${{ needs.versioning.outputs.version }} | Deployment Verified"
             }
 
       - name: Notify Failure
-        if: ${{ needs.test.result != 'success' || needs.security_scan.result != 'success' || needs.versioning.result != 'success' || needs.docker_build_push.result != 'success' || needs.deploy.result != 'success' }}
+        if: ${{ needs.health_check.result != 'success' }}
         uses: slackapi/slack-github-action@v2
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK }}
           webhook-type: incoming-webhook
           payload: |
             {
-              "text": "❌ Pipeline Failed
-
-              Test: ${{ needs.test.result }}
-              Security: ${{ needs.security_scan.result }}
-              Docker Build: ${{ needs.docker_build_push.result }}
-              Deploy: ${{ needs.deploy.result }}"
+              "text": "❌ Pipeline Failed | Check GitHub Actions Logs"
             }
