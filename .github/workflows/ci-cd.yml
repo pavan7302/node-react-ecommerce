@@ -5,6 +5,11 @@ on:
     branches:
       - master
 
+# REQUIRED FOR VERSION TAG PUSHING
+permissions:
+  contents: write
+
+# CANCEL OLD RUNS IF NEW PUSH COMES
 concurrency:
   group: production-${{ github.ref }}
   cancel-in-progress: true
@@ -14,29 +19,36 @@ env:
 
 jobs:
 
-#############################################################
+#####################################################################
 # 1. UNIT TEST
-#############################################################
+#####################################################################
   unit_test:
     name: Unit Test
-    runs-on: [self-hosted, linux]
+    runs-on:
+      - self-hosted
+      - linux
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v5
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: backend/package-lock.json
 
-      - name: Start MongoDB Container
+      # CLEAN OLD TEST MONGO IF RUNNER REUSED
+      - name: Remove Old Mongo Container
+        run: |
+          docker rm -f ci-mongo || true
+
+      - name: Start MongoDB For Testing
         uses: supercharge/mongodb-github-action@1.12.0
         with:
           mongodb-version: 7
-          mongodb-container-name: ci-mongo-${{ github.run_id }}
+          mongodb-container-name: ci-mongo
           mongodb-port: 27019
 
       - name: Install Dependencies
@@ -50,21 +62,28 @@ jobs:
           MONGODB_URL: mongodb://localhost:27019/ecommerce
         run: npm test
 
+      - name: Cleanup Test Mongo
+        if: always()
+        run: |
+          docker rm -f ci-mongo || true
 
-#############################################################
+
+#####################################################################
 # 2. SECURITY SCAN
-#############################################################
+#####################################################################
   security_scan:
     name: Security Scan
     needs: unit_test
-    runs-on: [self-hosted, linux]
+    runs-on:
+      - self-hosted
+      - linux
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v5
 
-      - name: Run Trivy Scan
-        uses: aquasecurity/trivy-action@v0.36.0
+      - name: Run Trivy Security Scan
+        uses: aquasecurity/trivy-action@0.28.0
         with:
           scan-type: fs
           scan-ref: .
@@ -73,13 +92,15 @@ jobs:
           exit-code: 1
 
 
-#############################################################
+#####################################################################
 # 3. VERSIONING
-#############################################################
+#####################################################################
   versioning:
-    name: Semantic Versioning
+    name: Versioning
     needs: security_scan
-    runs-on: [self-hosted, linux]
+    runs-on:
+      - self-hosted
+      - linux
 
     outputs:
       version: ${{ steps.tag_version.outputs.new_tag }}
@@ -90,7 +111,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Auto Increment Version
+      - name: Generate Semantic Version
         id: tag_version
         uses: anothrNick/github-tag-action@1.71.0
         env:
@@ -99,28 +120,30 @@ jobs:
           WITH_V: true
 
 
-#############################################################
-# 4. BUILD AND PUSH
-#############################################################
+#####################################################################
+# 4. BUILD AND PUSH DOCKER IMAGE
+#####################################################################
   build_push:
-    name: Build and Push Docker Image
+    name: Build And Push
     needs: versioning
-    runs-on: [self-hosted, linux]
+    runs-on:
+      - self-hosted
+      - linux
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v5
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Docker Login
+      - name: Login DockerHub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Generate Docker Metadata
+      - name: Docker Metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
@@ -134,10 +157,10 @@ jobs:
             org.opencontainers.image.title=backend
             org.opencontainers.image.description=Node React Ecommerce Backend
             org.opencontainers.image.version=${{ needs.versioning.outputs.version }}
-            org.opencontainers.image.source=${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.repository }}
 
-      - name: Build and Push Docker Image
+      - name: Build and Push Image
         uses: docker/build-push-action@v7
         with:
           context: ./backend
@@ -145,15 +168,18 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+          # CACHE FOR FAST BUILDS
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
 
-#############################################################
+#####################################################################
 # 5. SLACK NOTIFICATION
-#############################################################
+#####################################################################
   slack:
     name: Slack Notification
+
     needs:
       - unit_test
       - security_scan
@@ -161,34 +187,41 @@ jobs:
       - build_push
 
     if: always()
-    runs-on: [self-hosted, linux]
+
+    runs-on:
+      - self-hosted
+      - linux
 
     steps:
-      - name: Success Notification
+
+      - name: Slack Success Notification
         if: ${{ needs.unit_test.result == 'success' && needs.security_scan.result == 'success' && needs.build_push.result == 'success' }}
+
         uses: rtCamp/action-slack-notify@v2
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           SLACK_COLOR: good
-          SLACK_TITLE: CI/CD Pipeline Success
+          SLACK_TITLE: Pipeline Success
           SLACK_MESSAGE: |
-            Pipeline Successful
+            CI/CD Pipeline Successful
 
             Version : ${{ needs.versioning.outputs.version }}
-            Tests : Passed
-            Security : Passed
+            Unit Test : Passed
+            Security Scan : Passed
             Docker Push : Success
 
-      - name: Failure Notification
+
+      - name: Slack Failure Notification
         if: ${{ needs.unit_test.result != 'success' || needs.security_scan.result != 'success' || needs.build_push.result != 'success' }}
+
         uses: rtCamp/action-slack-notify@v2
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           SLACK_COLOR: danger
-          SLACK_TITLE: CI/CD Pipeline Failed
+          SLACK_TITLE: Pipeline Failed
           SLACK_MESSAGE: |
-            Pipeline Failed
+            CI/CD Pipeline Failed
 
             Unit Test : ${{ needs.unit_test.result }}
-            Security : ${{ needs.security_scan.result }}
-            Build : ${{ needs.build_push.result }}
+            Security Scan : ${{ needs.security_scan.result }}
+            Build Push : ${{ needs.build_push.result }}
