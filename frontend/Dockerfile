@@ -1,23 +1,35 @@
-# Build stage
-FROM node:20-alpine as build
+# =========================
+# BUILD STAGE
+# =========================
+FROM node:22-alpine AS build
 
 WORKDIR /app
 
+ENV NODE_ENV=production
 ENV NODE_OPTIONS=--openssl-legacy-provider
 
+# Copy dependency files first (better cache)
 COPY package*.json ./
-RUN npm install
 
+# Faster + deterministic install
+RUN npm ci --prefer-offline --no-audit
+
+# Copy source code
 COPY . .
+
+# Build app
 RUN npm run build
 
 
-# Production stage
-FROM nginx:1.27-alpine
+# =========================
+# PRODUCTION STAGE
+# =========================
+FROM nginx:alpine
 
+# Copy build output
 COPY --from=build /app/build /usr/share/nginx/html
 
-# add custom nginx config
+# Custom nginx config
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80

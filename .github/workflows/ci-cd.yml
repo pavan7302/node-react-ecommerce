@@ -1,4 +1,3 @@
-
 name: Ecommerce CI-CD Pipeline
 
 on:
@@ -15,9 +14,9 @@ env:
 
 jobs:
 
-# =====================================
+# ==================================================
 # 1. UNIT TEST
-# =====================================
+# ==================================================
   unit-test:
     name: Unit Test
     runs-on: self-hosted
@@ -29,10 +28,10 @@ jobs:
           - 27017:27017
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup NodeJS
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -40,28 +39,27 @@ jobs:
           cache-dependency-path: backend/package-lock.json
 
       - name: Install Dependencies
-        run: |
-          cd backend
-          npm ci
+        uses: bahmutov/npm-install@v1
+        with:
+          working-directory: backend
 
-      - name: Run Tests
-        run: |
-          cd backend
-          npm test
+      - name: Run Unit Test
+        run: npm test
+        working-directory: backend
         env:
           NODE_ENV: test
           MONGODB_URL: mongodb://127.0.0.1:27017/ecommerce
 
 
-# =====================================
+# ==================================================
 # 2. SECURITY SCAN
-# =====================================
+# ==================================================
   security-scan:
     name: Security Scan
     runs-on: self-hosted
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Cache Trivy DB
@@ -70,45 +68,47 @@ jobs:
           path: ~/.cache/trivy
           key: trivy-cache-${{ runner.os }}
 
-      - name: Trivy Scan
-        uses: aquasecurity/trivy-action@v0.36.0
+      - name: Trivy FileSystem Scan
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           scan-type: fs
           scan-ref: .
-          severity: HIGH,CRITICAL
+          severity: CRITICAL,HIGH
           format: table
 
 
-# =====================================
-# 3. VERSIONING (PAUL HATCH)
-# =====================================
+# ==================================================
+# 3. VERSIONING
+# ==================================================
   versioning:
     name: Versioning
     runs-on: self-hosted
 
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      version: ${{ steps.semver.outputs.version }}
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # safer than github-tag-action
       - name: Generate Semantic Version
-        id: version
-        uses: PaulHatch/semantic-version@v5.4.0
+        id: semver
+        uses: paulhatch/semantic-version@v5.4.0
         with:
+          tag_prefix: "v"
           major_pattern: "major"
           minor_pattern: "minor"
           version_format: "${major}.${minor}.${patch}"
 
 
-# =====================================
+# ==================================================
 # 4. BACKEND DOCKER BUILD + PUSH
-# =====================================
+# ==================================================
   docker-backend:
-    name: Docker Backend Build
+    name: Docker Backend Build Push
     runs-on: self-hosted
 
     needs:
@@ -117,13 +117,13 @@ jobs:
       - versioning
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Docker Login
+      - name: Login DockerHub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
@@ -135,6 +135,7 @@ jobs:
           context: ./backend
           file: ./backend/Dockerfile
           push: true
+          provenance: false
           tags: |
             ${{ env.IMAGE_BACKEND }}:latest
             ${{ env.IMAGE_BACKEND }}:${{ needs.versioning.outputs.version }}
@@ -142,11 +143,11 @@ jobs:
           cache-to: type=gha,mode=max
 
 
-# =====================================
+# ==================================================
 # 5. FRONTEND DOCKER BUILD + PUSH
-# =====================================
+# ==================================================
   docker-frontend:
-    name: Docker Frontend Build
+    name: Docker Frontend Build Push
     runs-on: self-hosted
 
     needs:
@@ -155,13 +156,13 @@ jobs:
       - versioning
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Docker Login
+      - name: Login DockerHub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
@@ -173,6 +174,7 @@ jobs:
           context: ./frontend
           file: ./frontend/Dockerfile
           push: true
+          provenance: false
           tags: |
             ${{ env.IMAGE_FRONTEND }}:latest
             ${{ env.IMAGE_FRONTEND }}:${{ needs.versioning.outputs.version }}
@@ -180,9 +182,9 @@ jobs:
           cache-to: type=gha,mode=max
 
 
-# =====================================
+# ==================================================
 # 6. SLACK NOTIFICATION (ONLY ONCE)
-# =====================================
+# ==================================================
   slack-notification:
     name: Slack Notification
     runs-on: self-hosted
@@ -190,14 +192,14 @@ jobs:
     needs:
       - unit-test
       - security-scan
-      - versioning
       - docker-backend
       - docker-frontend
+      - versioning
 
     if: always()
 
     steps:
-      - name: Slack Success
+      - name: Success Notification
         if: ${{ needs.unit-test.result == 'success' && needs.security-scan.result == 'success' && needs.docker-backend.result == 'success' && needs.docker-frontend.result == 'success' }}
         uses: rtCamp/action-slack-notify@v2
         env:
@@ -209,9 +211,9 @@ jobs:
             Security Scan Passed
             Backend Docker Push Success
             Frontend Docker Push Success
-            Version Created: ${{ needs.versioning.outputs.version }}
+            Version: ${{ needs.versioning.outputs.version }}
 
-      - name: Slack Failure
+      - name: Failure Notification
         if: ${{ needs.unit-test.result != 'success' || needs.security-scan.result != 'success' || needs.docker-backend.result != 'success' || needs.docker-frontend.result != 'success' }}
         uses: rtCamp/action-slack-notify@v2
         env:
@@ -219,5 +221,5 @@ jobs:
           SLACK_COLOR: danger
           SLACK_TITLE: Pipeline Failed
           SLACK_MESSAGE: |
-            One or more jobs failed.
+            One or more pipeline jobs failed.
             Check GitHub Actions logs.
