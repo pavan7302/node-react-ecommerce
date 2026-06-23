@@ -5,16 +5,17 @@ on:
     branches:
       - master
 
-permissions:
-  contents: write
-
 env:
   IMAGE_NAME: backend
 
-#########################################################
-# 1. UNIT TEST
-#########################################################
+permissions:
+  contents: write
+
 jobs:
+
+  #########################################################
+  # 1. UNIT TEST
+  #########################################################
   unit_test:
     name: Unit Test
     runs-on:
@@ -22,21 +23,23 @@ jobs:
       - Linux
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v5
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: backend/package-lock.json
 
+      # Mongo for CI only (safe now because separate runner EC2)
       - name: Start MongoDB
         uses: supercharge/mongodb-github-action@1.12.0
         with:
           mongodb-version: 7
           mongodb-port: 27017
+          mongodb-container-name: ci-mongo
 
       - name: Install Dependencies
         working-directory: backend
@@ -49,6 +52,7 @@ jobs:
           MONGODB_URL: mongodb://localhost:27017/ecommerce
         run: npm test
 
+
   #########################################################
   # 2. SECURITY SCAN
   #########################################################
@@ -60,47 +64,49 @@ jobs:
       - Linux
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v5
 
-      - name: Run Trivy Filesystem Scan
+      - name: Run Trivy Security Scan
         uses: aquasecurity/trivy-action@0.28.0
         with:
           scan-type: fs
           scan-ref: .
-          severity: HIGH,CRITICAL
+          severity: CRITICAL,HIGH
           format: table
           exit-code: 1
+
 
   #########################################################
   # 3. VERSIONING
   #########################################################
   versioning:
-    name: Semantic Versioning
+    name: Generate Version
     needs: security_scan
     runs-on:
       - self-hosted
       - Linux
 
     outputs:
-      version: ${{ steps.version.outputs.new_tag }}
+      version: ${{ steps.version.outputs.version }}
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Generate Version Tag
+      # simple version based on run number
+      - name: Generate Version
         id: version
-        uses: mathieudutour/github-tag-action@v6.2
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          default_bump: patch
-          tag_prefix: v
+        run: |
+          VERSION=v1.0.${{ github.run_number }}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Generated Version: $VERSION"
+
 
   #########################################################
-  # 4. BUILD + PUSH
+  # 4. BUILD AND PUSH
   #########################################################
   build_push:
     name: Build and Push Docker
@@ -110,55 +116,82 @@ jobs:
       - Linux
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v5
 
-      - name: Set up Docker Buildx
+      - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login Docker Hub
+      - name: Login DockerHub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Generate Docker Metadata
+      - name: Extract Docker Metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@v5
         with:
           images: ${{ secrets.DOCKER_USERNAME }}/backend
           tags: |
+            type=raw,value=latest
             type=raw,value=${{ needs.versioning.outputs.version }}
             type=sha
-            type=raw,value=latest
           labels: |
             org.opencontainers.image.title=backend
-            org.opencontainers.image.description=Node Ecommerce Backend
+            org.opencontainers.image.description=Node React Ecommerce Backend
             org.opencontainers.image.version=${{ needs.versioning.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
 
-      - name: Build and Push Image
+      - name: Build and Push Docker Image
         uses: docker/build-push-action@v7
         with:
           context: ./backend
           file: ./backend/Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
 
   #########################################################
-  # 5. SLACK
+  # 5. DEPLOY TO PRODUCTION EC2
   #########################################################
-  slack_notify:
+  deploy:
+    name: Deploy Application
+    needs: build_push
+    runs-on:
+      - self-hosted
+      - Linux
+
+    steps:
+      - name: Deploy using SSH
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd ~/node-react-ecommerce
+            docker pull ${{ secrets.DOCKER_USERNAME }}/backend:latest
+            docker compose down
+            docker compose up -d
+
+
+  #########################################################
+  # 6. SLACK NOTIFICATION
+  #########################################################
+  slack_notification:
     name: Slack Notification
     if: always()
+
     needs:
       - unit_test
       - security_scan
       - versioning
       - build_push
+      - deploy
 
     runs-on:
       - self-hosted
@@ -166,33 +199,35 @@ jobs:
 
     steps:
       - name: Notify Success
-        if: ${{ needs.build_push.result == 'success' }}
+        if: ${{ needs.deploy.result == 'success' }}
         uses: slackapi/slack-github-action@v2
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK }}
           webhook-type: incoming-webhook
           payload: |
             {
-              "text": "SUCCESS PIPELINE
+              "text": "SUCCESS ✅
 
               Version: ${{ needs.versioning.outputs.version }}
 
               Unit Test: Passed
               Security Scan: Passed
-              Docker Build: Success"
+              Docker Build: Passed
+              Deployment: Passed"
             }
 
       - name: Notify Failure
-        if: ${{ needs.build_push.result != 'success' }}
+        if: ${{ needs.deploy.result != 'success' }}
         uses: slackapi/slack-github-action@v2
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK }}
           webhook-type: incoming-webhook
           payload: |
             {
-              "text": "FAILED PIPELINE
+              "text": "FAILED ❌
 
               Unit Test: ${{ needs.unit_test.result }}
               Security Scan: ${{ needs.security_scan.result }}
-              Docker Build: ${{ needs.build_push.result }}"
+              Build: ${{ needs.build_push.result }}
+              Deploy: ${{ needs.deploy.result }}"
             }
