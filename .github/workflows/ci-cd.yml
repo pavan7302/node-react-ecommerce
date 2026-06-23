@@ -5,168 +5,178 @@ on:
     branches:
       - master
 
-env:
-  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/node-react-ecommerce
-
 jobs:
 
-  #############################################
+  # =========================
   # 1. UNIT TEST
-  #############################################
+  # =========================
   unit-test:
     name: Unit Test
     runs-on: self-hosted
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: backend/package-lock.json
+
+      - name: Install Backend Dependencies
+        run: |
+          cd backend
+          npm install
 
       - name: Start MongoDB
         run: |
           docker run -d \
-            --name mongodb \
+            --name ci-mongo \
             -p 27017:27017 \
             mongo:7
 
-      - name: Install Dependencies
-        working-directory: backend
-        run: npm ci
-
       - name: Run Unit Tests
-        working-directory: backend
-        env:
-          NODE_ENV: test
-          MONGODB_URL: mongodb://localhost:27017/ecommerce
-        run: npm test
+        run: |
+          cd backend
+          npm test
 
       - name: Stop MongoDB
         if: always()
-        run: docker rm -f mongodb || true
+        run: docker rm -f ci-mongo
 
 
-  #############################################
+  # =========================
   # 2. SECURITY SCAN
-  #############################################
+  # =========================
   security-scan:
     name: Security Scan
     runs-on: self-hosted
-    needs: unit-test
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Build Docker Image
-        run: docker build -t ecommerce-app .
-
-      - name: Run Trivy Security Scan
+      - name: Trivy Filesystem Scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ecommerce-app
-          format: table
-          severity: HIGH,CRITICAL
-          exit-code: 1
+          scan-type: fs
+          scan-ref: .
 
 
-  #############################################
+  # =========================
   # 3. VERSIONING
-  #############################################
+  # =========================
   versioning:
     name: Versioning
     runs-on: self-hosted
-    needs: security-scan
 
     outputs:
-      version: ${{ steps.tag.outputs.new_tag }}
+      version: ${{ steps.version.outputs.version }}
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Generate Version Tag
-        id: tag
-        uses: mathieudutour/github-tag-action@v6.2
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          default_bump: patch
-
-      - name: Show Version
-        run: echo "New Version = ${{ steps.tag.outputs.new_tag }}"
+        id: version
+        run: |
+          VERSION=v1.${{ github.run_number }}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Generated version: $VERSION"
 
 
-  #############################################
-  # 4. DOCKER BUILD AND PUSH
-  #############################################
+  # =========================
+  # 4. DOCKER BUILD + PUSH
+  # =========================
   docker-build-push:
     name: Docker Build Push
     runs-on: self-hosted
-    needs: versioning
+    needs: [unit-test, security-scan, versioning]
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
+
 
       - name: Login to DockerHub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Generate Docker Metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest
-            type=sha
-            type=raw,value=${{ needs.versioning.outputs.version }}
-
-      - name: Build and Push Docker Image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
 
-  #############################################
+      # BACKEND IMAGE
+
+      - name: Build Backend Image
+        run: |
+          docker build \
+          -t pavan7302/ecommerce-backend:${{ needs.versioning.outputs.version }} \
+          ./backend
+
+      - name: Push Backend Image
+        run: |
+          docker push \
+          pavan7302/ecommerce-backend:${{ needs.versioning.outputs.version }}
+
+
+      # FRONTEND IMAGE
+
+      - name: Build Frontend Image
+        run: |
+          docker build \
+          -t pavan7302/ecommerce-frontend:${{ needs.versioning.outputs.version }} \
+          ./frontend
+
+      - name: Push Frontend Image
+        run: |
+          docker push \
+          pavan7302/ecommerce-frontend:${{ needs.versioning.outputs.version }}
+
+
+      # LATEST TAGS
+
+      - name: Tag Latest Backend
+        run: |
+          docker tag \
+          pavan7302/ecommerce-backend:${{ needs.versioning.outputs.version }} \
+          pavan7302/ecommerce-backend:latest
+
+      - name: Push Latest Backend
+        run: docker push pavan7302/ecommerce-backend:latest
+
+      - name: Tag Latest Frontend
+        run: |
+          docker tag \
+          pavan7302/ecommerce-frontend:${{ needs.versioning.outputs.version }} \
+          pavan7302/ecommerce-frontend:latest
+
+      - name: Push Latest Frontend
+        run: docker push pavan7302/ecommerce-frontend:latest
+
+
+  # =========================
   # 5. SLACK NOTIFICATION
-  #############################################
+  # =========================
   slack-notification:
     name: Slack Notification
     runs-on: self-hosted
-
-    needs:
-      - unit-test
-      - security-scan
-      - versioning
-      - docker-build-push
+    needs: [unit-test, security-scan, docker-build-push]
 
     if: always()
 
     steps:
-      - name: Send Slack Notification
-        uses: rtCamp/action-slack-notify@v2
+      - name: Slack Notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              "text": "*Pipeline Result* 🚀\n
+              Repository: ${{ github.repository }}\n
+              Branch: ${{ github.ref_name }}\n
+              Unit Test: ${{ needs.unit-test.result }}\n
+              Security Scan: ${{ needs.security-scan.result }}\n
+              Docker Build: ${{ needs.docker-build-push.result }}"
+            }
         env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-
-          SLACK_TITLE: "Pipeline Execution Report"
-
-          SLACK_MESSAGE: |
-            Repository: ${{ github.repository }}
-            Branch: ${{ github.ref_name }}
-
-            Unit Test: ${{ needs.unit-test.result }}
-            Security Scan: ${{ needs.security-scan.result }}
-            Versioning: ${{ needs.versioning.result }}
-            Docker Push: ${{ needs.docker-build-push.result }}
-
-          SLACK_COLOR: ${{ job.status }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
