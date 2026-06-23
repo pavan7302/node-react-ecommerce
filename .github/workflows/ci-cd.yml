@@ -1,4 +1,4 @@
-```yaml
+
 name: Ecommerce CI-CD Pipeline
 
 on:
@@ -222,5 +222,4 @@ jobs:
           SLACK_MESSAGE: |
             One or more jobs failed.
             Check GitHub Actions logs.
-```
 
