@@ -1,18 +1,24 @@
+# ---------- Build Stage ----------
 FROM node:22-alpine AS builder
 
 WORKDIR /app
 
 ENV NODE_OPTIONS=--openssl-legacy-provider
+ENV CI=true
 
-COPY package.json package-lock.json ./
+# dependency cache layer
+COPY package*.json ./
 
-RUN npm ci --prefer-offline --no-audit
+RUN npm install --no-audit --silent
 
-COPY . .
+# copy only required source
+COPY public ./public
+COPY src ./src
 
 RUN npm run build
 
 
+# ---------- Production ----------
 FROM nginx:alpine
 
 COPY --from=builder /app/build /usr/share/nginx/html

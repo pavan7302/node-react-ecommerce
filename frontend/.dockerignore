@@ -1,9 +1,11 @@
 node_modules
+build
 .git
 .github
 README.md
+coverage
+.env
 Dockerfile
 npm-debug.log
-.env
-coverage
-build
+.vscode
+*.md
