@@ -1,8 +1,9 @@
 node_modules
 .git
 .github
-build
-Dockerfile
 README.md
-.env
+Dockerfile
 npm-debug.log
+.env
+coverage
+build
