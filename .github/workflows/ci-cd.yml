@@ -1,3 +1,4 @@
+
 name: Ecommerce CI-CD Pipeline
 
 on:
@@ -9,14 +10,11 @@ permissions:
   contents: write
 
 env:
+  REGISTRY: docker.io
   IMAGE_BACKEND: pavan7302/ecommerce-backend
   IMAGE_FRONTEND: pavan7302/ecommerce-frontend
 
 jobs:
-
-# ==================================================
-# 1. UNIT TEST
-# ==================================================
   unit-test:
     name: Unit Test
     runs-on: self-hosted
@@ -28,10 +26,10 @@ jobs:
           - 27017:27017
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup NodeJS
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -39,76 +37,55 @@ jobs:
           cache-dependency-path: backend/package-lock.json
 
       - name: Install Dependencies
-        uses: bahmutov/npm-install@v1
-        with:
-          working-directory: backend
-
-      - name: Run Unit Test
-        run: npm test
-        working-directory: backend
+        run: |
+          cd backend
+          npm ci
+      - name: Run Tests
+        run: |
+          cd backend
+          npm test
         env:
           NODE_ENV: test
           MONGODB_URL: mongodb://127.0.0.1:27017/ecommerce
 
-
-# ==================================================
-# 2. SECURITY SCAN
-# ==================================================
   security-scan:
     name: Security Scan
     runs-on: self-hosted
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Cache Trivy DB
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/trivy
-          key: trivy-cache-${{ runner.os }}
-
-      - name: Trivy FileSystem Scan
+      - name: Trivy Scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
-          severity: CRITICAL,HIGH
+          severity: HIGH,CRITICAL
           format: table
 
-
-# ==================================================
-# 3. VERSIONING
-# ==================================================
   versioning:
     name: Versioning
     runs-on: self-hosted
 
     outputs:
-      version: ${{ steps.semver.outputs.version }}
+      tag: ${{ steps.version.outputs.new_tag }}
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # safer than github-tag-action
-      - name: Generate Semantic Version
-        id: semver
-        uses: paulhatch/semantic-version@v5.4.0
-        with:
-          tag_prefix: "v"
-          major_pattern: "major"
-          minor_pattern: "minor"
-          version_format: "${major}.${minor}.${patch}"
+      - name: Auto Tag
+        id: version
+        uses: anothrNick/github-tag-action@1.70.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BUMP: patch
 
-
-# ==================================================
-# 4. BACKEND DOCKER BUILD + PUSH
-# ==================================================
-  docker-backend:
-    name: Docker Backend Build Push
+  docker-build-push:
+    name: Docker Build Push
     runs-on: self-hosted
 
     needs:
@@ -117,7 +94,7 @@ jobs:
       - versioning
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Setup Docker Buildx
@@ -129,62 +106,34 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build and Push Backend
+      # BACKEND
+
+      - name: Build Backend Image
         uses: docker/build-push-action@v6
         with:
           context: ./backend
           file: ./backend/Dockerfile
           push: true
-          provenance: false
           tags: |
             ${{ env.IMAGE_BACKEND }}:latest
-            ${{ env.IMAGE_BACKEND }}:${{ needs.versioning.outputs.version }}
+            ${{ env.IMAGE_BACKEND }}:${{ needs.versioning.outputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # FRONTEND
 
-# ==================================================
-# 5. FRONTEND DOCKER BUILD + PUSH
-# ==================================================
-  docker-frontend:
-    name: Docker Frontend Build Push
-    runs-on: self-hosted
-
-    needs:
-      - unit-test
-      - security-scan
-      - versioning
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Build and Push Frontend
+      - name: Build Frontend Image
         uses: docker/build-push-action@v6
         with:
           context: ./frontend
           file: ./frontend/Dockerfile
           push: true
-          provenance: false
           tags: |
             ${{ env.IMAGE_FRONTEND }}:latest
-            ${{ env.IMAGE_FRONTEND }}:${{ needs.versioning.outputs.version }}
+            ${{ env.IMAGE_FRONTEND }}:${{ needs.versioning.outputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-
-# ==================================================
-# 6. SLACK NOTIFICATION (ONLY ONCE)
-# ==================================================
   slack-notification:
     name: Slack Notification
     runs-on: self-hosted
@@ -192,15 +141,14 @@ jobs:
     needs:
       - unit-test
       - security-scan
-      - docker-backend
-      - docker-frontend
       - versioning
+      - docker-build-push
 
     if: always()
 
     steps:
-      - name: Success Notification
-        if: ${{ needs.unit-test.result == 'success' && needs.security-scan.result == 'success' && needs.docker-backend.result == 'success' && needs.docker-frontend.result == 'success' }}
+      - name: Slack Success
+        if: ${{ needs.unit-test.result == 'success' && needs.security-scan.result == 'success' && needs.docker-build-push.result == 'success' }}
         uses: rtCamp/action-slack-notify@v2
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
@@ -209,17 +157,15 @@ jobs:
           SLACK_MESSAGE: |
             Unit Test Passed
             Security Scan Passed
-            Backend Docker Push Success
-            Frontend Docker Push Success
-            Version: ${{ needs.versioning.outputs.version }}
-
-      - name: Failure Notification
-        if: ${{ needs.unit-test.result != 'success' || needs.security-scan.result != 'success' || needs.docker-backend.result != 'success' || needs.docker-frontend.result != 'success' }}
+            Docker Build Push Success
+            Version Created: ${{ needs.versioning.outputs.tag }}
+      - name: Slack Failure
+        if: ${{ needs.unit-test.result != 'success' || needs.security-scan.result != 'success' || needs.docker-build-push.result != 'success' }}
         uses: rtCamp/action-slack-notify@v2
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           SLACK_COLOR: danger
           SLACK_TITLE: Pipeline Failed
           SLACK_MESSAGE: |
-            One or more pipeline jobs failed.
+            One or more jobs failed.
             Check GitHub Actions logs.
